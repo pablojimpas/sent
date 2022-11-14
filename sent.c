@@ -19,11 +19,17 @@
 #include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
 
+#include <cairo/cairo.h>
+#include <cairo/cairo-xlib.h>
+#include <cairo/cairo-pdf.h>
+
 #include "arg.h"
 #include "util.h"
 #include "drw.h"
 
 char *argv0;
+
+int use_inverted_colors = 0;
 
 /* macros */
 #define LEN(a)         (sizeof(a) / sizeof(a)[0])
@@ -97,6 +103,7 @@ static void cleanup(int slidesonly);
 static void reload(const Arg *arg);
 static void load(FILE *fp);
 static void advance(const Arg *arg);
+static void pdf();
 static void quit(const Arg *arg);
 static void resize(int width, int height);
 static void run();
@@ -105,6 +112,7 @@ static void xdraw();
 static void xhints();
 static void xinit();
 static void xloadfonts();
+static void togglescm();
 
 static void bpress(XEvent *);
 static void cmessage(XEvent *);
@@ -428,10 +436,6 @@ load(FILE *fp)
 		maxlines = 0;
 		memset((s = &slides[slidecount]), 0, sizeof(Slide));
 		do {
-			/* if there's a leading null, we can't do blen-1 */
-			if (buf[0] == '\0')
-				continue;
-
 			if (buf[0] == '#')
 				continue;
 
@@ -477,6 +481,39 @@ advance(const Arg *arg)
 		idx = new_idx;
 		xdraw();
 	}
+}
+
+void
+pdf()
+{
+	const Arg next = { .i = 1 };
+	Arg first;
+	cairo_surface_t *cs;
+
+	char filename[strlen(fname) + 5];
+	sprintf(filename, "%s.pdf", fname);
+	cairo_surface_t *pdf = cairo_pdf_surface_create(filename, xw.w, xw.h);
+
+	cairo_t *cr = cairo_create(pdf);
+
+	first.i = -idx;
+	advance(&first);
+
+	cs = cairo_xlib_surface_create(xw.dpy, xw.win, xw.vis, xw.w, xw.h);
+	cairo_set_source_surface(cr, cs, 0.0, 0.0);
+	for (int i = 0; i < slidecount; ++i) {
+		cairo_paint(cr);
+		cairo_show_page(cr);
+		cairo_surface_flush(cs);
+		advance(&next);
+		cairo_surface_mark_dirty(cs);
+	}
+	cairo_surface_destroy(cs);
+
+	cairo_destroy(cr);
+	cairo_surface_destroy(pdf);
+	first.i = -(slidecount-1);
+	advance(&first);
 }
 
 void
@@ -537,6 +574,12 @@ xdraw()
 			         0,
 			         slides[idx].lines[i],
 			         0);
+		if (idx != 0 && progressheight != 0) {
+			drw_rect(d,
+			         0, xw.h - progressheight,
+			         (xw.w * idx)/(slidecount - 1), progressheight,
+			         1, 0);
+		}
 		drw_map(d, xw.win, 0, 0, xw.w, xw.h);
 	} else {
 		if (!(im->state & SCALED))
@@ -590,7 +633,11 @@ xinit()
 
 	if (!(d = drw_create(xw.dpy, xw.scr, xw.win, xw.w, xw.h)))
 		die("sent: Unable to create drawing context");
-	sc = drw_scm_create(d, colors, 2);
+	if (use_inverted_colors) {
+		sc = drw_scm_create(d, inverted_colors, 2);
+	} else {
+		sc = drw_scm_create(d, colors, 2);
+	}
 	drw_setscheme(d, sc);
 	XSetWindowBackground(xw.dpy, xw.win, sc[ColBg].pixel);
 
@@ -606,6 +653,23 @@ xinit()
 	xhints();
 	XSync(xw.dpy, False);
 }
+
+void
+togglescm()
+{
+    if (use_inverted_colors) {
+        free(sc);
+        sc = drw_scm_create(d, colors, 2);
+        use_inverted_colors = 0;
+    } else {
+        sc = drw_scm_create(d, inverted_colors, 2);
+        use_inverted_colors = 1;
+    }
+    drw_setscheme(d, sc);
+       XSetWindowBackground(xw.dpy, xw.win, sc[ColBg].pixel);
+    xdraw();
+}
+
 
 void
 xloadfonts()
@@ -679,7 +743,7 @@ configure(XEvent *e)
 void
 usage()
 {
-	die("usage: %s [file]", argv0);
+	die("usage: %s [-c fgcolor] [-b bgcolor] [-f font] [file]", argv0);
 }
 
 int
@@ -691,6 +755,18 @@ main(int argc, char *argv[])
 	case 'v':
 		fprintf(stderr, "sent-"VERSION"\n");
 		return 0;
+	case 'f':
+		fontfallbacks[0] = EARGF(usage());
+		break;
+	case 'c':
+		colors[0] = EARGF(usage());
+		break;
+	case 'b':
+		colors[1] = EARGF(usage());
+		break;
+	case 'i':
+		use_inverted_colors = 1;
+		break;
 	default:
 		usage();
 	} ARGEND
