@@ -270,6 +270,9 @@ ffprepare(Image *img)
 	if (depth < 24)
 		die("sent: Display color depths < 24 not supported");
 
+	if (img->ximg)
+		XDestroyImage(img->ximg);
+
 	if (!(img->ximg = XCreateImage(xw.dpy, CopyFromParent, depth, ZPixmap, 0,
 	                               NULL, width, height, 32, 0)))
 		die("sent: Unable to create XImage");
